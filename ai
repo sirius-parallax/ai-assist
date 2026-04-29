@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # === AI CONSOLE ASSISTANT ===
-# Version: 1.0.3
-# Description: CLI assistant for Linux using Ollama API with robust error handling
+# Version: 1.0.4
+# Description: CLI assistant for Linux using Ollama API with robust flow control
 
 # === КОНСТАНТЫ И ПУТИ ===
 CONF_FILE="$HOME/.ai_assistant.conf"
@@ -187,7 +187,6 @@ select_model_interactive() {
     fi
 
     # Проверяем, есть ли модели в списке И работает ли сервер
-    # Если список пуст, пробуем обновить его снова, вдруг сервер стал доступен
     if [ ${#MODELS[@]} -eq 0 ]; then
         echo -e "${YELLOW}⚠️ Список моделей пуст. Пробую подключиться к ${OLLAMA_HOST}...${NC}"
         if check_connection; then
@@ -203,7 +202,12 @@ select_model_interactive() {
             if [ -n "$MANUAL_MODEL" ]; then
                 SELECTED_MODEL="$MANUAL_MODEL"
                 save_last_model "$SELECTED_MODEL"
-                echo -e "${GREEN}✅ Модель ${SELECTED_MODEL} сохранена (будет использована при наличии связи).${NC}"
+                echo -e "${GREEN}✅ Модель ${SELECTED_MODEL} сохранена.${NC}"
+                # Если вопроса нет, выходим
+                if [ -z "$USER_QUERY" ]; then
+                    echo -e "${GRAY}Теперь задайте вопрос, например: ai как дела${NC}"
+                    exit 0
+                fi
                 return
             else
                 echo -e "${RED}Ошибка: имя модели не может быть пустым.${NC}"
@@ -228,6 +232,12 @@ select_model_interactive() {
     fi
     save_last_model "$SELECTED_MODEL"
     echo -e "${GREEN}✅ Модель ${SELECTED_MODEL} сохранена как основная.${NC}"
+    
+    # Если это был интерактивный запуск без вопроса, завершаем работу
+    if [ -z "$USER_QUERY" ]; then
+        echo -e "${GRAY}Теперь задайте вопрос, например: ai как дела${NC}"
+        exit 0
+    fi
 }
 
 save_last_model() {
@@ -307,17 +317,20 @@ done
 
 USER_QUERY="${ARGS[*]}"
 
+# Если вопрос не задан, обрабатываем интерактивный режим
 if [ -z "$USER_QUERY" ]; then
     if [ -z "$SELECTED_MODEL" ]; then
          load_state
          if [ -z "$LAST_MODEL" ] || [ "$LAST_MODEL" == "" ]; then
              select_model_interactive
-             exit 0
+             # select_model_interactive сама вызовет exit 0, если вопроса нет
          else
              SELECTED_MODEL="$LAST_MODEL"
+             show_help
          fi
+    else
+        show_help
     fi
-    show_help
 fi
 
 # Загрузка состояния, если модель не была задана явно через -m
