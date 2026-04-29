@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # === AI CONSOLE ASSISTANT ===
-# Version: 1.0.2
-# Description: CLI assistant for Linux using Ollama API with interactive setup
+# Version: 1.0.3
+# Description: CLI assistant for Linux using Ollama API with robust error handling
 
 # === КОНСТАНТЫ И ПУТИ ===
 CONF_FILE="$HOME/.ai_assistant.conf"
@@ -164,34 +164,55 @@ update_model_list() {
 
 load_state() {
     if [ ! -f "$STATE_FILE" ]; then
+        # Если файла состояния нет, пытаемся обновить его с сервера
         update_model_list
+    else
+        source "$STATE_FILE"
     fi
-    source "$STATE_FILE"
 }
 
 select_model_interactive() {
-    # Если файла состояния нет, пытаемся обновить
+    # Если файла состояния нет, создаем его через update_model_list
     if [ ! -f "$STATE_FILE" ]; then
         update_model_list
-    fi
-    source "$STATE_FILE"
-
-    # Если список моделей пуст (или файл битый), предлагаем ручной ввод
-    if [ ${#MODELS[@]} -eq 0 ]; then
-        echo -e "${YELLOW}⚠️ Не удалось загрузить список моделей.${NC}"
-        echo -e "${WHITE}Введите имя модели вручную (например, qwen2.5-coder:7b):${NC}"
-        read -p "> " MANUAL_MODEL
-        if [ -n "$MANUAL_MODEL" ]; then
-            SELECTED_MODEL="$MANUAL_MODEL"
-            save_last_model "$SELECTED_MODEL"
-            echo -e "${GREEN}✅ Модель ${SELECTED_MODEL} сохранена.${NC}"
-            return
+        # После обновления перечитываем файл
+        if [ -f "$STATE_FILE" ]; then
+            source "$STATE_FILE"
         else
-            echo -e "${RED}Ошибка: имя модели не может быть пустым.${NC}"
+            # Если update не создал файл (ошибка сети), переходим к ручному вводу ниже
+            MODELS=()
+        fi
+    else
+        source "$STATE_FILE"
+    fi
+
+    # Проверяем, есть ли модели в списке И работает ли сервер
+    # Если список пуст, пробуем обновить его снова, вдруг сервер стал доступен
+    if [ ${#MODELS[@]} -eq 0 ]; then
+        echo -e "${YELLOW}⚠️ Список моделей пуст. Пробую подключиться к ${OLLAMA_HOST}...${NC}"
+        if check_connection; then
+            # Если сервер доступен, но список пуст — значит, там реально нет моделей
+            echo -e "${RED}❌ Сервер доступен, но на нем нет установленных моделей.${NC}"
+            echo -e "${GRAY}Установите модель командой: ollama pull qwen2.5-coder:7b${NC}"
             exit 1
+        else
+            # Если сервер НЕ доступен, предлагаем ручной ввод
+            echo -e "${RED}⚠️ Не удалось подключиться к ${OLLAMA_HOST}.${NC}"
+            echo -e "${WHITE}Введите имя модели вручную (например, qwen2.5-coder:7b):${NC}"
+            read -p "> " MANUAL_MODEL
+            if [ -n "$MANUAL_MODEL" ]; then
+                SELECTED_MODEL="$MANUAL_MODEL"
+                save_last_model "$SELECTED_MODEL"
+                echo -e "${GREEN}✅ Модель ${SELECTED_MODEL} сохранена (будет использована при наличии связи).${NC}"
+                return
+            else
+                echo -e "${RED}Ошибка: имя модели не может быть пустым.${NC}"
+                exit 1
+            fi
         fi
     fi
 
+    # Если список моделей есть, показываем меню
     echo -e "${BLUE}📚 Выберите модель для работы:${NC}"
     local i=1
     local model_array=("${MODELS[@]}")
