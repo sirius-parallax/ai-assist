@@ -1,16 +1,8 @@
-
----
-
-### 2. Файл `ai` (Финальный скрипт)
-
-Скопируй этот код в файл с именем `ai` (без расширения). Это самая стабильная версия со всеми нашими доработками.
-
-```bash
 #!/bin/bash
 
 # === AI CONSOLE ASSISTANT ===
-# Version: 1.0.0
-# Description: CLI assistant for Linux using Ollama API
+# Version: 1.0.2
+# Description: CLI assistant for Linux using Ollama API with interactive setup
 
 # === КОНСТАНТЫ И ПУТИ ===
 CONF_FILE="$HOME/.ai_assistant.conf"
@@ -28,14 +20,60 @@ NC='\033[0m'
 
 # --- ФУНКЦИИ УПРАВЛЕНИЯ КОНФИГОМ ---
 
+prompt_for_host() {
+    echo -e "${YELLOW}⚠️ Не удалось подключиться к текущему адресу.${NC}"
+    echo -e "${WHITE}Введите адрес сервера Ollama (или нажмите Enter для localhost):${NC}"
+    read -p "[http://localhost:11434]: " INPUT_HOST
+    
+    if [ -z "$INPUT_HOST" ]; then
+        INPUT_HOST="http://localhost:11434"
+    fi
+    
+    # Сохраняем в конфиг
+    if [ ! -f "$CONF_FILE" ]; then
+        echo "# AI Assistant Configuration" > "$CONF_FILE"
+    fi
+    # Обновляем или добавляем строку
+    if grep -q "OLLAMA_HOST" "$CONF_FILE"; then
+        sed -i "s|OLLAMA_HOST=.*|OLLAMA_HOST=\"${INPUT_HOST}\"|" "$CONF_FILE"
+    else
+        echo "OLLAMA_HOST=\"${INPUT_HOST}\"" >> "$CONF_FILE"
+    fi
+    
+    echo -e "${GREEN}✅ Адрес сохранен: ${INPUT_HOST}${NC}"
+    source "$CONF_FILE"
+}
+
+check_connection() {
+    local tags_response
+    tags_response=$(curl -s --connect-timeout 3 "${OLLAMA_HOST}/api/tags")
+    if [ -z "$tags_response" ]; then
+        return 1
+    else
+        return 0
+    fi
+}
+
 init_config() {
     if [ ! -f "$CONF_FILE" ]; then
-        cat > "$CONF_FILE" << EOF
-# AI Assistant Configuration
-OLLAMA_HOST="http://localhost:11434"
-EOF
+        echo -e "${CYAN}========================================${NC}"
+        echo -e "${GREEN}👋 Добро пожаловать в AI Assistant!${NC}"
+        echo -e "${CYAN}========================================${NC}"
+        echo ""
+        prompt_for_host
+        
+        # Проверяем соединение сразу после ввода
+        if check_connection; then
+            echo -e "${GREEN}✅ Подключение успешно установлено.${NC}"
+        else
+            echo -e "${RED}⚠️ Не удалось подключиться к ${OLLAMA_HOST}.${NC}"
+            echo -e "${GRAY}Убедитесь, что Ollama запущен и доступен по сети.${NC}"
+            echo -e "${GRAY}Вы можете изменить адрес позже командой: ai --set-host <url>${NC}"
+            echo ""
+        fi
+    else
+        source "$CONF_FILE"
     fi
-    source "$CONF_FILE"
 }
 
 set_host() {
@@ -55,14 +93,17 @@ set_host() {
 list_models() {
     init_config
     echo -e "${BLUE}🔄 Загрузка списка моделей с ${OLLAMA_HOST}...${NC}"
-    local tags_response
-    tags_response=$(curl -s --connect-timeout 5 "${OLLAMA_HOST}/api/tags")
     
-    if [ -z "$tags_response" ]; then
-        echo -e "${RED}Ошибка подключения.${NC}"
-        exit 1
+    if ! check_connection; then
+        prompt_for_host
+        if ! check_connection; then
+             echo -e "${RED}❌ Ошибка подключения. Проверьте сеть и адрес.${NC}"
+             exit 1
+        fi
     fi
 
+    local tags_response
+    tags_response=$(curl -s --connect-timeout 5 "${OLLAMA_HOST}/api/tags")
     local models
     models=$(echo "$tags_response" | jq -r '.models[].name')
 
@@ -80,20 +121,30 @@ list_models() {
 
 update_model_list() {
     init_config
-    echo -e "${BLUE}🔄 Обновление локального кэша моделей...${NC}"
-    local tags_response
-    tags_response=$(curl -s --connect-timeout 5 "${OLLAMA_HOST}/api/tags")
+    echo -e "${BLUE}🔄 Подключение к ${OLLAMA_HOST}...${NC}"
     
-    if [ -z "$tags_response" ]; then
-        echo -e "${RED}Ошибка подключения.${NC}"
-        exit 1
+    if ! check_connection; then
+        echo -e "${RED}❌ Ошибка подключения.${NC}"
+        echo -e "${YELLOW}Хотите изменить адрес сервера? (y/n):${NC}"
+        read -p "> " change_host
+        if [[ "$change_host" =~ ^[Yy]$ ]]; then
+            prompt_for_host
+            if ! check_connection; then
+                 echo -e "${RED}❌ Снова ошибка подключения. Проверьте настройки сети и запущен ли Ollama.${NC}"
+                 exit 1
+            fi
+        else
+            exit 1
+        fi
     fi
 
+    local tags_response
+    tags_response=$(curl -s --connect-timeout 5 "${OLLAMA_HOST}/api/tags")
     local models
     models=$(echo "$tags_response" | jq -r '.models[].name')
 
     if [ -z "$models" ]; then
-        echo -e "${RED}Модели не найдены.${NC}"
+        echo -e "${RED}Модели не найдены на сервере.${NC}"
         exit 1
     fi
 
@@ -107,40 +158,55 @@ update_model_list() {
         echo ")"
     } > "$STATE_FILE"
     
-    echo -e "${GREEN}✅ Список сохранен.${NC}"
+    echo -e "${GREEN}✅ Список моделей сохранен.${NC}"
     exit 0
 }
 
 load_state() {
     if [ ! -f "$STATE_FILE" ]; then
-        echo "LAST_MODEL=\"\"" > "$STATE_FILE"
-        echo "MODELS=()" >> "$STATE_FILE"
+        update_model_list
     fi
     source "$STATE_FILE"
 }
 
 select_model_interactive() {
-    load_state
-    if [ ${#MODELS[@]} -eq 0 ]; then
+    # Если файла состояния нет, пытаемся обновить
+    if [ ! -f "$STATE_FILE" ]; then
         update_model_list
-        load_state
+    fi
+    source "$STATE_FILE"
+
+    # Если список моделей пуст (или файл битый), предлагаем ручной ввод
+    if [ ${#MODELS[@]} -eq 0 ]; then
+        echo -e "${YELLOW}⚠️ Не удалось загрузить список моделей.${NC}"
+        echo -e "${WHITE}Введите имя модели вручную (например, qwen2.5-coder:7b):${NC}"
+        read -p "> " MANUAL_MODEL
+        if [ -n "$MANUAL_MODEL" ]; then
+            SELECTED_MODEL="$MANUAL_MODEL"
+            save_last_model "$SELECTED_MODEL"
+            echo -e "${GREEN}✅ Модель ${SELECTED_MODEL} сохранена.${NC}"
+            return
+        else
+            echo -e "${RED}Ошибка: имя модели не может быть пустым.${NC}"
+            exit 1
+        fi
     fi
 
-    echo -e "${BLUE}📚 Выберите модель:${NC}"
+    echo -e "${BLUE}📚 Выберите модель для работы:${NC}"
     local i=1
     local model_array=("${MODELS[@]}")
     for model in "${model_array[@]}"; do
         echo -e "  ${GREEN}${i})${NC} ${model}"
         ((i++))
     done
-    read -p "Номер: " num
+    read -p "Номер модели: " num
     if [[ "$num" =~ ^[0-9]+$ ]] && [ "$num" -ge 1 ] && [ "$num" -le "${#model_array[@]}" ]; then
         SELECTED_MODEL="${model_array[$((num-1))]}"
     else
         SELECTED_MODEL="${model_array[0]}"
     fi
     save_last_model "$SELECTED_MODEL"
-    echo -e "${GREEN}✅ Сохранено: ${SELECTED_MODEL}${NC}"
+    echo -e "${GREEN}✅ Модель ${SELECTED_MODEL} сохранена как основная.${NC}"
 }
 
 save_last_model() {
@@ -155,7 +221,7 @@ save_last_model() {
 
 show_help() {
     init_config
-    load_state
+    load_state 2>/dev/null || true
     
     echo -e "${CYAN}========================================${NC}"
     echo -e "${CYAN}       AI Console Assistant Help        ${NC}"
