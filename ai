@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # === AI CONSOLE ASSISTANT ===
-# Version: 1.0.4
-# Description: CLI assistant for Linux using Ollama API with robust flow control
+# Version: 1.0.5
+# Description: CLI assistant for Linux using Ollama API with stats and robust flow control
 
 # === КОНСТАНТЫ И ПУТИ ===
 CONF_FILE="$HOME/.ai_assistant.conf"
@@ -383,6 +383,34 @@ RESPONSE=$(curl -s -X POST "${OLLAMA_HOST}/api/generate" \
 
 RAW_RESPONSE=$(echo "$RESPONSE" | jq -r '.response // empty')
 
+# === СТАТИСТИКА ===
+# Извлекаем метрики из полного JSON ответа
+TOKENS_PROMPT=$(echo "$RESPONSE" | jq -r '.prompt_eval_count // 0')
+TOKENS_GENERATED=$(echo "$RESPONSE" | jq -r '.eval_count // 0')
+DURATION_NS=$(echo "$RESPONSE" | jq -r '.total_duration // 0')
+LOAD_DURATION_NS=$(echo "$RESPONSE" | jq -r '.load_duration // 0')
+
+# Конвертируем наносекунды в секунды и миллисекунды
+if [ "$DURATION_NS" -gt 0 ] 2>/dev/null; then
+    TOTAL_SEC=$(awk "BEGIN {printf \"%.2f\", $DURATION_NS/1000000000}")
+    LOAD_MS=$(awk "BEGIN {printf \"%.0f\", $LOAD_DURATION_NS/1000000}")
+    
+    # Считаем скорость генерации (токенов в секунду)
+    # Исключаем время загрузки модели из расчета скорости генерации, если оно было значительным
+    GEN_DURATION_NS=$((DURATION_NS - LOAD_DURATION_NS))
+    if [ "$GEN_DURATION_NS" -lt 0 ]; then GEN_DURATION_NS=$DURATION_NS; fi
+    
+    if [ "$TOKENS_GENERATED" -gt 0 ]; then
+        SPEED=$(awk "BEGIN {printf \"%.1f\", $TOKENS_GENERATED / ($GEN_DURATION_NS/1000000000)}")
+    else
+        SPEED="0.0"
+    fi
+else
+    TOTAL_SEC="0.00"
+    LOAD_MS="0"
+    SPEED="0.0"
+fi
+
 if [ "$IS_CMD_MODE" = true ]; then
     CLEAN_JSON=$(echo "$RAW_RESPONSE" | sed 's/```json//g; s/```//g; s/^ *//; s/ *$//')
     CMD_LINE=$(echo "$CLEAN_JSON" | jq -r '.command // empty' 2>/dev/null)
@@ -406,6 +434,14 @@ if [ "$IS_CMD_MODE" = true ]; then
     fi
 
     echo ""
+    
+    # Вывод статистики для режима команд
+    echo -e "${GRAY}--- Статистика ---${NC}"
+    echo -e "${GRAY}Токены (вопрос): ${TOKENS_PROMPT} | Токены (ответ): ${TOKENS_GENERATED}${NC}"
+    echo -e "${GRAY}Время: ${TOTAL_SEC} сек (загрузка: ${LOAD_MS} мс) | Скорость: ${SPEED} т/с${NC}"
+    echo -e "${GRAY}------------------${NC}"
+    echo ""
+
     read -p "Действие: [Enter]-Запустить, e-Редактировать, n-Отмена: " choice
 
     case "$choice" in 
@@ -421,4 +457,11 @@ if [ "$IS_CMD_MODE" = true ]; then
 else
     echo -e "${GREEN}🤖 Ответ:${NC}"
     echo -e "${WHITE}${RAW_RESPONSE}${NC}"
+    
+    # Вывод статистики для режима чата
+    echo ""
+    echo -e "${GRAY}--- Статистика ---${NC}"
+    echo -e "${GRAY}Токены (вопрос): ${TOKENS_PROMPT} | Токены (ответ): ${TOKENS_GENERATED}${NC}"
+    echo -e "${GRAY}Время: ${TOTAL_SEC} сек (загрузка: ${LOAD_MS} мс) | Скорость: ${SPEED} т/с${NC}"
+    echo -e "${GRAY}------------------${NC}"
 fi
