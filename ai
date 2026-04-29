@@ -1,0 +1,324 @@
+
+---
+
+### 2. Файл `ai` (Финальный скрипт)
+
+Скопируй этот код в файл с именем `ai` (без расширения). Это самая стабильная версия со всеми нашими доработками.
+
+```bash
+#!/bin/bash
+
+# === AI CONSOLE ASSISTANT ===
+# Version: 1.0.0
+# Description: CLI assistant for Linux using Ollama API
+
+# === КОНСТАНТЫ И ПУТИ ===
+CONF_FILE="$HOME/.ai_assistant.conf"
+STATE_FILE="$HOME/.ai_config"
+
+# Цвета
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+BLUE='\033[0;34m'
+WHITE='\033[1;37m'
+GRAY='\033[0;90m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+# --- ФУНКЦИИ УПРАВЛЕНИЯ КОНФИГОМ ---
+
+init_config() {
+    if [ ! -f "$CONF_FILE" ]; then
+        cat > "$CONF_FILE" << EOF
+# AI Assistant Configuration
+OLLAMA_HOST="http://localhost:11434"
+EOF
+    fi
+    source "$CONF_FILE"
+}
+
+set_host() {
+    local new_host="$1"
+    if [[ "$new_host" =~ ^https?:// ]]; then
+        sed -i "s|OLLAMA_HOST=.*|OLLAMA_HOST=\"${new_host}\"|" "$CONF_FILE"
+        echo -e "${GREEN}✅ Сервер изменен на: ${new_host}${NC}"
+        rm -f "$STATE_FILE"
+        echo -e "${YELLOW}⚠️ Список моделей сброшен. Выполните 'ai --update'.${NC}"
+    else
+        echo -e "${RED}❌ Неверный формат. Используйте http://ip:port${NC}"
+        exit 1
+    fi
+    exit 0
+}
+
+list_models() {
+    init_config
+    echo -e "${BLUE}🔄 Загрузка списка моделей с ${OLLAMA_HOST}...${NC}"
+    local tags_response
+    tags_response=$(curl -s --connect-timeout 5 "${OLLAMA_HOST}/api/tags")
+    
+    if [ -z "$tags_response" ]; then
+        echo -e "${RED}Ошибка подключения.${NC}"
+        exit 1
+    fi
+
+    local models
+    models=$(echo "$tags_response" | jq -r '.models[].name')
+
+    if [ -z "$models" ]; then
+        echo -e "${YELLOW}Модели не найдены.${NC}"
+        exit 0
+    fi
+
+    echo -e "${GREEN}✅ Доступные модели:${NC}"
+    echo "$models" | while read -r line; do
+        echo -e "  • ${line}"
+    done
+    exit 0
+}
+
+update_model_list() {
+    init_config
+    echo -e "${BLUE}🔄 Обновление локального кэша моделей...${NC}"
+    local tags_response
+    tags_response=$(curl -s --connect-timeout 5 "${OLLAMA_HOST}/api/tags")
+    
+    if [ -z "$tags_response" ]; then
+        echo -e "${RED}Ошибка подключения.${NC}"
+        exit 1
+    fi
+
+    local models
+    models=$(echo "$tags_response" | jq -r '.models[].name')
+
+    if [ -z "$models" ]; then
+        echo -e "${RED}Модели не найдены.${NC}"
+        exit 1
+    fi
+
+    {
+        echo "# AI State Config"
+        echo "LAST_MODEL=\"\""
+        echo "MODELS=("
+        while IFS= read -r line; do
+            echo "  \"$line\""
+        done <<< "$models"
+        echo ")"
+    } > "$STATE_FILE"
+    
+    echo -e "${GREEN}✅ Список сохранен.${NC}"
+    exit 0
+}
+
+load_state() {
+    if [ ! -f "$STATE_FILE" ]; then
+        echo "LAST_MODEL=\"\"" > "$STATE_FILE"
+        echo "MODELS=()" >> "$STATE_FILE"
+    fi
+    source "$STATE_FILE"
+}
+
+select_model_interactive() {
+    load_state
+    if [ ${#MODELS[@]} -eq 0 ]; then
+        update_model_list
+        load_state
+    fi
+
+    echo -e "${BLUE}📚 Выберите модель:${NC}"
+    local i=1
+    local model_array=("${MODELS[@]}")
+    for model in "${model_array[@]}"; do
+        echo -e "  ${GREEN}${i})${NC} ${model}"
+        ((i++))
+    done
+    read -p "Номер: " num
+    if [[ "$num" =~ ^[0-9]+$ ]] && [ "$num" -ge 1 ] && [ "$num" -le "${#model_array[@]}" ]; then
+        SELECTED_MODEL="${model_array[$((num-1))]}"
+    else
+        SELECTED_MODEL="${model_array[0]}"
+    fi
+    save_last_model "$SELECTED_MODEL"
+    echo -e "${GREEN}✅ Сохранено: ${SELECTED_MODEL}${NC}"
+}
+
+save_last_model() {
+    if [ ! -f "$STATE_FILE" ]; then
+        echo "LAST_MODEL=\"\"" > "$STATE_FILE"
+        echo "MODELS=()" >> "$STATE_FILE"
+    fi
+    sed -i "s/LAST_MODEL=.*/LAST_MODEL=\"$1\"/" "$STATE_FILE"
+}
+
+# --- СПРАВКА ---
+
+show_help() {
+    init_config
+    load_state
+    
+    echo -e "${CYAN}========================================${NC}"
+    echo -e "${CYAN}       AI Console Assistant Help        ${NC}"
+    echo -e "${CYAN}========================================${NC}"
+    echo ""
+    echo -e "${WHITE}Текущие настройки:${NC}"
+    echo -e "  ${GRAY}Сервер Ollama:${NC} ${OLLAMA_HOST}"
+    echo -e "  ${GRAY}Модель по умолчанию:${NC} ${LAST_MODEL:-не выбрана}"
+    echo ""
+    echo -e "${WHITE}Использование:${NC}"
+    echo -e "  ${GREEN}ai${NC} <ваш вопрос>"
+    echo ""
+    echo -e "${WHITE}Опции:${NC}"
+    echo -e "  ${GREEN}-h, --help${NC}       Показать эту справку"
+    echo -e "  ${GREEN}-l, --list${NC}       Показать список моделей на сервере"
+    echo -e "  ${GREEN}-m <модель>${NC}      Выбрать и СОХРАНИТЬ модель"
+    echo -e "  ${GREEN}-t, --text${NC}       Режим чата (без выполнения команд)"
+    echo -e "  ${GREEN}--set-host <URL>${NC} Изменить адрес сервера"
+    echo -e "  ${GREEN}--update${NC}         Обновить локальный список моделей"
+    echo -e "  ${GREEN}--reset${NC}          Сбросить выбор модели"
+    echo ""
+    echo -e "${GRAY}Совет: Используйте модели qwen2.5-coder для лучших результатов.${NC}"
+    echo -e "${CYAN}========================================${NC}"
+    exit 0
+}
+
+# --- ОСНОВНАЯ ЛОГИКА ---
+
+init_config
+IS_CMD_MODE=true
+USER_QUERY=""
+SELECTED_MODEL=""
+
+ARGS=()
+while [[ "$#" -gt 0 ]]; do
+    case $1 in
+        -h|--help) show_help ;;
+        -l|--list) list_models ;;
+        --set-host) 
+            if [ -n "$2" ]; then set_host "$2"; else echo "Укажите URL"; exit 1; fi ;;
+        --update) update_model_list ;;
+        --reset) 
+            sed -i 's/LAST_MODEL=".*"/LAST_MODEL=""/' "$STATE_FILE" 2>/dev/null
+            echo -e "${YELLOW}Сброшено.${NC}"
+            select_model_interactive
+            exit 0
+            ;;
+        -t|--text) IS_CMD_MODE=false; shift ;;
+        -m) 
+            if [ -n "$2" ]; then
+                save_last_model "$2"
+                SELECTED_MODEL="$2"
+                echo -e "${GREEN}✅ Модель сохранена: $2${NC}"
+                shift 2
+            else
+                echo "Ошибка: укажите модель после -m"; exit 1
+            fi
+            ;;
+        *) ARGS+=("$1"); shift ;;
+    esac
+done
+
+USER_QUERY="${ARGS[*]}"
+
+if [ -z "$USER_QUERY" ]; then
+    if [ -z "$SELECTED_MODEL" ]; then
+         load_state
+         if [ -z "$LAST_MODEL" ] || [ "$LAST_MODEL" == "" ]; then
+             select_model_interactive
+             exit 0
+         else
+             SELECTED_MODEL="$LAST_MODEL"
+         fi
+    fi
+    show_help
+fi
+
+# Загрузка состояния, если модель не была задана явно через -m
+if [ -z "$SELECTED_MODEL" ]; then
+    load_state
+    if [ -n "$LAST_MODEL" ]; then
+        SELECTED_MODEL="$LAST_MODEL"
+    else
+        select_model_interactive
+    fi
+fi
+
+echo -e "${GRAY}[Сервер: ${OLLAMA_HOST} | Модель: ${SELECTED_MODEL}]${NC}"
+if [ "$IS_CMD_MODE" = true ]; then
+    echo -e "${GRAY}[Режим: КОМАНДА]${NC}"
+else
+    echo -e "${GRAY}[Режим: ТЕКСТ]${NC}"
+fi
+
+echo -e "${BLUE}🤖 Думаю...${NC}"
+
+# Промпты
+if [ "$IS_CMD_MODE" = true ]; then
+    SYSTEM_PROMPT="You are a Linux CLI assistant. 
+    Return ONLY a raw JSON object with keys: 'command', 'explanation', 'is_safe'.
+    
+    Rules:
+    1. 'command': Valid bash command. NO placeholders like <file>. Use '*' or '.' if needed.
+    2. 'explanation': Short explanation in RUSSIAN.
+    3. 'is_safe': Boolean (true/false).
+    
+    Example: 
+    {\"command\": \"find / -name '*.log' -size +100M\", \"explanation\": \"Поиск логов больше 100МБ\", \"is_safe\": true}"
+else
+    SYSTEM_PROMPT="You are a helpful assistant. Answer in Russian. Be concise."
+fi
+
+FULL_PROMPT="${SYSTEM_PROMPT}
+
+User task: ${USER_QUERY}"
+
+RESPONSE=$(curl -s -X POST "${OLLAMA_HOST}/api/generate" \
+    -H "Content-Type: application/json" \
+    -d "{
+        \"model\": \"${SELECTED_MODEL}\",
+        \"prompt\": \"$(echo "$FULL_PROMPT" | sed 's/"/\\"/g' | tr '\n' ' ')\",
+        \"stream\": false,
+        \"options\": { \"temperature\": 0.1 }
+    }")
+
+RAW_RESPONSE=$(echo "$RESPONSE" | jq -r '.response // empty')
+
+if [ "$IS_CMD_MODE" = true ]; then
+    CLEAN_JSON=$(echo "$RAW_RESPONSE" | sed 's/```json//g; s/```//g; s/^ *//; s/ *$//')
+    CMD_LINE=$(echo "$CLEAN_JSON" | jq -r '.command // empty' 2>/dev/null)
+    EXPL_LINE=$(echo "$CLEAN_JSON" | jq -r '.explanation // empty' 2>/dev/null)
+    IS_SAFE=$(echo "$CLEAN_JSON" | jq -r '.is_safe // true' 2>/dev/null)
+
+    CMD_LINE=$(echo "$CMD_LINE" | sed 's/<[^>]*>//g; s/\[[^]]*\]//g' | xargs)
+
+    if [ -z "$CMD_LINE" ] || [ "$CMD_LINE" == "null" ]; then
+        echo -e "${YELLOW}⚠️ Команда не получена.${NC}"
+        exit 0
+    fi
+
+    echo -e "${GREEN}✅ Команда:${NC}"
+    echo -e "${WHITE}${CMD_LINE}${NC}"
+    echo ""
+    echo -e "${YELLOW}💡 Пояснение:${NC} ${EXPL_LINE}"
+    
+    if [ "$IS_SAFE" == "false" ]; then
+        echo -e "${RED}⚠️ ОПАСНО: Модель предупреждает о риске!${NC}"
+    fi
+
+    echo ""
+    read -p "Действие: [Enter]-Запустить, e-Редактировать, n-Отмена: " choice
+
+    case "$choice" in 
+      e|E )
+        read -e -i "$CMD_LINE" -p "> " EDITED_CMD
+        if [ -n "$EDITED_CMD" ]; then
+            eval "$EDITED_CMD"
+        fi
+        ;;
+      n|N ) echo -e "${RED}❌ Отменено.${NC}" ;;
+      * ) eval "$CMD_LINE" ;;
+    esac
+else
+    echo -e "${GREEN}🤖 Ответ:${NC}"
+    echo -e "${WHITE}${RAW_RESPONSE}${NC}"
+fi
